@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Travel-inspired color palette */
+    --background: 203 100% 98%;
+    --foreground: 213 31% 16%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 213 31% 16%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 213 31% 16%;
+
+    /* Ocean blue primary */
+    --primary: 200 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    
+    /* Sunset accent */
+    --accent: 25 95% 60%;
+    --accent-foreground: 0 0% 100%;
+
+    /* Soft secondary */
+    --secondary: 203 50% 94%;
+    --secondary-foreground: 213 31% 16%;
+
+    /* Muted tones */
+    --muted: 203 30% 96%;
+    --muted-foreground: 213 20% 45%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 203 30% 90%;
+    --input: 0 0% 100%;
+    --ring: 200 100% 50%;
+    
+    /* Custom travel tokens */
+    --ocean: 200 100% 50%;
+    --ocean-light: 200 100% 85%;
+    --sunset: 25 95% 60%;
+    --sunset-light: 25 95% 85%;
+    --sky: 203 100% 98%;
+    
+    /* Gradients */
+    --gradient-ocean: linear-gradient(135deg, hsl(var(--ocean)), hsl(var(--primary)));
+    --gradient-sunset: linear-gradient(135deg, hsl(var(--sunset)), hsl(25 95% 70%));
+    --gradient-hero: linear-gradient(135deg, hsl(var(--ocean)) 0%, hsl(var(--sunset)) 100%);
+    
+    /* Shadows */
+    --shadow-soft: 0 4px 20px hsl(var(--ocean) / 0.1);
+    --shadow-card: 0 8px 32px hsl(var(--ocean) / 0.12);
+    --shadow-floating: 0 12px 40px hsl(var(--ocean) / 0.15);
+    
+    /* Animations */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
