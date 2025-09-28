@@ -12,7 +12,7 @@ import {
 // import "leaflet/dist/leaflet.css";
 
 // Backend base URL
-const API_BASE = (import.meta?.env?.VITE_API_BASE || "http://localhost:3000").replace(/\/+$/,"");
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 
 type LatLng = { lat: number; lng: number };
 type Candidate = {
