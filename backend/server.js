@@ -58,6 +58,36 @@ function haversineMeters(a, b) {
   const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
+// --- time helpers ---
+function toISOHour(date) {
+  const d = new Date(date);
+  d.setUTCMinutes(0,0,0);
+  return d.toISOString().slice(0,13)+":00:00Z"; // yyyy-mm-ddThh:00:00Z
+}
+function roundToHour(date) {
+  const d = new Date(date);
+  d.setUTCMinutes(0,0,0);
+  return d;
+}
+// ETA → simple zodiac flavor (month-based; fun, not astronomical)
+const ZODIAC_BY_MONTH = {
+  1: ["Capricorn", "Aquarius"],
+  2: ["Aquarius", "Pisces"],
+  3: ["Pisces", "Aries"],
+  4: ["Aries", "Taurus"],
+  5: ["Taurus", "Gemini"],
+  6: ["Gemini", "Cancer"],
+  7: ["Cancer", "Leo"],
+  8: ["Leo", "Virgo"],
+  9: ["Virgo", "Libra"],
+ 10: ["Libra", "Scorpio"],
+ 11: ["Scorpio", "Sagittarius"],
+ 12: ["Sagittarius", "Capricorn"],
+};
+function zodiacForDate(d) {
+  const m = (new Date(d)).getUTCMonth()+1;
+  return ZODIAC_BY_MONTH[m] || [];
+}
 
 // Decode Google Encoded Polyline
 function decodePolyline(str) {
@@ -164,7 +194,7 @@ async function placesTextSearch({ lat, lng }, { query, radius = 4000 }) {
 // Base A→B directions (overview polyline for corridor)
 async function directionsAB({ origin, destination, mode = "driving", departure_time }) {
   const qs = new URLSearchParams({ origin, destination, mode, key: API_KEY });
-  if (departure_time) qs.set("departure_time", String(departure_time)); // 'now' or unix
+  if (departure_time) qs.set("departure_time", String(departure_time));
   const url = `https://maps.googleapis.com/maps/api/directions/json?${qs}`;
   const r = await fetch(url);
   const data = await r.json();
@@ -173,13 +203,16 @@ async function directionsAB({ origin, destination, mode = "driving", departure_t
   }
   const route = data.routes?.[0];
   const leg = route?.legs?.[0];
+  const durationSeconds = route?.legs?.reduce((s, l) => s + (l.duration?.value || 0), 0) || (leg?.duration?.value || null);
   return {
     polyline: route?.overview_polyline?.points || null,
     distanceText: leg?.distance?.text || null,
     durationText: leg?.duration?.text || null,
+    durationSeconds,   // <— add this
     route,
   };
 }
+
 
 // Estimate detour: time(i→i+K via place) − time(i→i+K)
 async function detourMinutes({ start, end, via, mode = "driving" }) {
@@ -197,6 +230,51 @@ async function detourMinutes({ start, end, via, mode = "driving" }) {
   const viaSec  = withVia.routes?.[0]?.legs?.reduce((s, l) => s + (l.duration?.value || 0), 0) || 0;
   return Math.max(0, Math.round((viaSec - baseSec) / 60)); // minutes
 }
+async function cloudCoverAt(lat, lng, etaDate) {
+  // Query a small window around ETA to be resilient
+  const start = new Date(etaDate);
+  start.setUTCHours(start.getUTCHours() - 1, 0, 0, 0);
+  const end = new Date(etaDate);
+  end.setUTCHours(end.getUTCHours() + 1, 0, 0, 0);
+
+  const qs = new URLSearchParams({
+    latitude: String(lat),
+    longitude: String(lng),
+    hourly: "cloudcover",
+    start: start.toISOString(),
+    end: end.toISOString(),
+    timezone: "UTC",
+  });
+  const url = `https://api.open-meteo.com/v1/forecast?${qs}`;
+  const r = await fetch(url);
+  const data = await r.json();
+  const hours = (data?.hourly?.time || []).map((t, i) => ({ time: t, cloud: data.hourly.cloudcover[i] }));
+  if (!hours.length) return null;
+
+  // pick the nearest hour
+  const target = roundToHour(etaDate).toISOString();
+  let best = hours[0], bestDiff = Math.abs(new Date(hours[0].time) - new Date(target));
+  for (const h of hours) {
+    const diff = Math.abs(new Date(h.time) - new Date(target));
+    if (diff < bestDiff) { bestDiff = diff; best = h; }
+  }
+  return typeof best.cloud === "number" ? best.cloud : null;
+}
+async function stargazeSpots({ lat, lng }, radius = 6000) {
+  // Try text queries that work well globally
+  const queries = ["observatory", "stargazing spot", "scenic viewpoint", "dark sky park"];
+  const out = [];
+  for (const q of queries) {
+    const r = await placesTextSearch({ lat, lng }, { query: q, radius: Math.round(radius * 1.3) });
+    out.push(...r);
+    if (out.length >= 3) break; // keep it tight per sample
+  }
+  // Dedup by place_id
+  const uniq = new Map();
+  for (const p of out) if (p.place_id && !uniq.has(p.place_id)) uniq.set(p.place_id, p);
+  return Array.from(uniq.values());
+}
+
 
 /* --------------------------- /api/discover-stops ----------------------- */
 /**
@@ -204,9 +282,7 @@ async function detourMinutes({ start, end, via, mode = "driving" }) {
  * - input: origin, destination, days, themes=comma list, mode, departure_time
  * - output: base route summary + list of candidates per theme with photo + detourMinutes
  *
- * Notes:
- * - We sample every ~ (routeLength / (days+1)*X) or a capped default (e.g., 20–40 km)
- * - We limit Places + detour calls for cost control
+ * Adds theme: stargaze_auto  → only returns spots with cloud cover ≤ 20% at ETA
  */
 app.get("/api/discover-stops", async (req, res) => {
   try {
@@ -216,7 +292,7 @@ app.get("/api/discover-stops", async (req, res) => {
       days = "2",
       themes = "hikes,waterfalls,lakes,cafes",
       mode = "driving",
-      departure_time,               // optional ('now' or unix)
+      departure_time,               // optional ('now' or unix epoch seconds)
       perTheme = "12",              // max results per theme overall
       perSamplePerTheme = "2",      // how many per sampled point per theme
       searchRadiusMeters = "3000"   // route corridor search radius
@@ -240,7 +316,6 @@ app.get("/api/discover-stops", async (req, res) => {
     // Aim ~10–15 samples per travel day, clamp to reasonable 15–40 km
     const targetSamples = Math.min(15 * d, 50);
     const everyMeters = Math.min(40000, Math.max(15000, Math.round(totalM / targetSamples)));
-
     const samples = samplePath(path, everyMeters);
 
     // Precompute cumulative distances to pick segment windows
@@ -257,6 +332,22 @@ app.get("/api/discover-stops", async (req, res) => {
       return best;
     }
 
+    // --- ETA math (proportional along base path) ---
+    const totalDurSec =
+      base.durationSeconds ||
+      Math.max(1800, Math.round(totalDist / 20000) * 3600); // rough fallback if needed
+    const departNow = String(departure_time || "").toLowerCase() === "now";
+    const departEpoch = departNow
+      ? Math.floor(Date.now() / 1000)
+      : (Number(departure_time) || Math.floor(Date.now() / 1000));
+
+    function etaForPoint(pt) {
+      const idx = nearestIndex(pt);
+      const frac = (cum[idx] || 0) / (totalDist || 1);
+      const etaSec = departEpoch + Math.round(frac * totalDurSec);
+      return new Date(etaSec * 1000);
+    }
+
     // 2) Discover candidates per theme around each sample
     const themeList = String(themes).split(",").map(s => s.trim()).filter(Boolean);
     const perThemeCap = Math.max(3, Math.min(40, Number(perTheme)));
@@ -269,6 +360,37 @@ app.get("/api/discover-stops", async (req, res) => {
 
     for (const pt of samples) {
       for (const theme of themeList) {
+        // --- Custom theme: "Only if cloudless" stargazing ---
+        if (theme === "stargaze_auto") {
+          const starCandidates = await stargazeSpots(pt, Math.min(radius * 1.5, 12000));
+          for (const p of starCandidates.slice(0, perSampleCap)) {
+            if (!p.location) continue;
+
+            // ETA at this candidate
+            const eta = etaForPoint({ lat: p.location.lat, lng: p.location.lng });
+
+            // Query Open-Meteo for cloud cover near ETA; keep only ≤ 20%
+            const cloud = await cloudCoverAt(p.location.lat, p.location.lng, eta);
+            if (cloud == null || cloud > 20) continue;
+
+            const zodiac = zodiacForDate(eta);
+            const enriched = {
+              ...p,
+              theme: "stargaze_auto",
+              stargaze: {
+                eta_iso: eta.toISOString(),
+                cloud_cover_percent: cloud,
+                zodiac, // flavor text array
+              },
+            };
+            if (!candidates[theme].has(p.place_id)) {
+              candidates[theme].set(p.place_id, enriched);
+            }
+          }
+          continue; // proceed next theme
+        }
+
+        // --- Standard themes via THEME_MAP ---
         const cfg = THEME_MAP[theme];
         if (!cfg) continue;
 
@@ -289,7 +411,11 @@ app.get("/api/discover-stops", async (req, res) => {
         }
 
         // Keep top N by rating/reviews
-        results.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0) || (b.user_ratings_total - a.user_ratings_total));
+        results.sort(
+          (a, b) =>
+            (b.rating ?? 0) - (a.rating ?? 0) ||
+            (b.user_ratings_total - a.user_ratings_total)
+        );
         for (const p of results.slice(0, perSampleCap)) {
           if (p.location && !candidates[theme].has(p.place_id)) {
             candidates[theme].set(p.place_id, { ...p, theme });
@@ -302,21 +428,20 @@ app.get("/api/discover-stops", async (req, res) => {
     const shortlists = {};
     for (const theme of themeList) {
       shortlists[theme] = Array.from(candidates[theme].values())
-        .sort((a, b) =>
-          (b.rating ?? 0) - (a.rating ?? 0) ||
-          (b.user_ratings_total - a.user_ratings_total)
+        .sort(
+          (a, b) =>
+            (b.rating ?? 0) - (a.rating ?? 0) ||
+            (b.user_ratings_total - a.user_ratings_total)
         )
         .slice(0, perThemeCap);
     }
 
-    // 4) Estimate detour minutes for each finalist (compare i→i+K via place vs direct)
-    //    Choose a local window around nearest path point; K ~ 10–20 points ahead (~10–20 km).
+    // 4) Estimate detour minutes for each finalist (local window)
     const K = 12;
-
     async function detourForPlace(p) {
       const idx = nearestIndex({ lat: p.location.lat, lng: p.location.lng });
-      const startIdx = Math.max(0, idx - Math.floor(K/2));
-      const endIdx = Math.min(path.length - 1, idx + Math.floor(K/2));
+      const startIdx = Math.max(0, idx - Math.floor(K / 2));
+      const endIdx = Math.min(path.length - 1, idx + Math.floor(K / 2));
       if (endIdx <= startIdx) return null;
       const start = path[startIdx], end = path[endIdx];
       const minutes = await detourMinutes({ start, end, via: p.location, mode });
@@ -324,7 +449,6 @@ app.get("/api/discover-stops", async (req, res) => {
     }
 
     for (const theme of themeList) {
-      // Detour calls can be heavy; cap per theme
       const list = shortlists[theme];
       for (const p of list) {
         p.detourMinutes = await detourForPlace(p); // may be null if directions failed
@@ -333,9 +457,9 @@ app.get("/api/discover-stops", async (req, res) => {
       list.sort((a, b) => {
         const qa = (a.rating || 3) * Math.log1p(a.user_ratings_total || 0);
         const qb = (b.rating || 3) * Math.log1p(b.user_ratings_total || 0);
-        const pa = (a.detourMinutes ?? 0) * 0.5; // penalty weight λ=0.5 min^-1 (tune)
+        const pa = (a.detourMinutes ?? 0) * 0.5; // penalty weight λ=0.5
         const pb = (b.detourMinutes ?? 0) * 0.5;
-        return (qb - pb) - (qa - pa); // higher (qa - pa) first
+        return (qb - pb) - (qa - pa);
       }).reverse();
     }
 
@@ -352,7 +476,7 @@ app.get("/api/discover-stops", async (req, res) => {
         sampleEveryMeters: everyMeters,
         searchRadiusMeters: radius,
       },
-      candidates: shortlists, // { theme: [ { place_id, name, photo_url, detourMinutes, ... } ] }
+      candidates: shortlists, // { theme: [ { place_id, name, photo_url, detourMinutes, ..., stargaze? } ] }
     });
   } catch (e) {
     console.error(e);
