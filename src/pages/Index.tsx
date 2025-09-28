@@ -11,7 +11,7 @@ import {
 // If not imported globally, uncomment:
 // import "leaflet/dist/leaflet.css";
 
-// near top of Index.tsx
+// Backend base URL
 const API_BASE = (import.meta?.env?.VITE_API_BASE || "http://localhost:3000").replace(/\/+$/,"");
 
 type LatLng = { lat: number; lng: number };
@@ -25,6 +25,11 @@ type Candidate = {
   location?: LatLng;
   detourMinutes?: number | null;
   theme?: string;
+  stargaze?: {            // for stargaze_auto theme
+    eta_iso: string;
+    cloud_cover_percent: number;
+    zodiac?: string[];
+  };
 };
 type CandidatesByTheme = Record<string, Candidate[]>;
 
@@ -41,7 +46,9 @@ type FinalRouteResponse = {
   waypoint_order?: number[]; // order of waypoints after optimize:true
 };
 
-const ALL_THEMES = ["hikes","waterfalls","lakes","cafes","viewpoints","parks","food","museums"] as const;
+const ALL_THEMES = [
+  "hikes","waterfalls","lakes","cafes","viewpoints","parks","food","museums","stargaze_auto"
+] as const;
 
 /* ---------------- helpers ---------------- */
 function decodePolyline(encoded: string): [number, number][] {
@@ -118,6 +125,7 @@ const Index: React.FC = () => {
   const [themes, setThemes] = useState<Record<string, boolean>>({
     hikes: true, cafes: true,
   });
+  // ensure all chips exist in state
   ALL_THEMES.forEach(t => { if (!(t in themes)) themes[t] = themes[t] ?? false; });
   const selectedThemes = useMemo(
     () => Object.entries(themes).filter(([, v]) => v).map(([k]) => k),
@@ -127,7 +135,6 @@ const Index: React.FC = () => {
   // async state
   const [discovering, setDiscovering] = useState(false);
   const [building, setBuilding] = useState(false);
-  const [buildingItin, setBuildingItin] = useState(false);
 
   // route state
   const [base, setBase] = useState<DiscoverResponse["base"] | null>(null);
@@ -137,10 +144,6 @@ const Index: React.FC = () => {
   const [finalOrder, setFinalOrder] = useState<number[] | null>(null);
   const [finalStopCards, setFinalStopCards] = useState<Candidate[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  // itineraries (3 versions)
-  const [itineraries, setItineraries] = useState<string[] | null>(null);
-  const [itinTab, setItinTab] = useState(0);
 
   // map computed
   const baseCoords = useMemo(
@@ -154,11 +157,12 @@ const Index: React.FC = () => {
   const markerPts: LatLng[] = useMemo(() => {
     const out: LatLng[] = [];
     Object.values(candidates).forEach(list =>
-      list.forEach(p => p.location && out.push(p.location))
+      list?.forEach(p => p.location && out.push(p.location))
     );
     return out;
   }, [candidates]);
 
+  /* ---------------- actions ---------------- */
   async function useMyLocation() {
     if (!("geolocation" in navigator)) {
       alert("Geolocation not available in this browser.");
@@ -194,7 +198,6 @@ const Index: React.FC = () => {
     setFinalTotals(null);
     setFinalOrder(null);
     setFinalStopCards([]);
-    setItineraries(null);
     try {
       const url = new URL(`${API_BASE}/api/discover-stops`);
       url.searchParams.set("origin", origin);
@@ -220,7 +223,6 @@ const Index: React.FC = () => {
     if (selectedIds.size === 0) return alert("Select at least one stop");
 
     setBuilding(true);
-    setItineraries(null);
     try {
       const providedIds = Array.from(selectedIds);
       const r = await fetch(`${API_BASE}/api/final-route`, {
@@ -244,7 +246,7 @@ const Index: React.FC = () => {
       // Build ordered list matching optimized route
       const allCandidateMap = new Map<string, Candidate>();
       Object.entries(candidates).forEach(([theme, list]) => {
-        list.forEach(c => allCandidateMap.set(c.place_id, { ...c, theme }));
+        list?.forEach(c => allCandidateMap.set(c.place_id, { ...c, theme }));
       });
 
       const orderedIds = (data.waypoint_order && data.waypoint_order.length)
@@ -264,48 +266,6 @@ const Index: React.FC = () => {
     }
   }
 
-  // (optional) kept for later if you re-add itinerary generation
-  async function buildItinerary() {
-    if (!finalTotals || finalStopCards.length === 0) {
-      return alert("Build the final route first, then try again.");
-    }
-    setBuildingItin(true);
-    try {
-      const payload = {
-        origin,
-        destination,
-        days,
-        totals: finalTotals,
-        stops: finalStopCards.map((s) => ({
-          place_id: s.place_id,
-          name: s.name,
-          address: s.address,
-          rating: s.rating,
-          user_ratings_total: s.user_ratings_total,
-          detourMinutes: s.detourMinutes ?? null,
-          theme: s.theme ?? null,
-        })),
-      };
-      const r = await fetch(`${API_BASE}/api/itinerary`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await r.json();
-      if (r.status !== 200) throw new Error(data.error || "Failed to generate itinerary");
-      if (!Array.isArray(data.versions) || data.versions.length === 0) {
-        throw new Error("No itinerary versions returned");
-      }
-      setItineraries(data.versions.slice(0, 3));
-      setItinTab(0);
-    } catch (e: any) {
-      console.error(e);
-      alert(e.message || "Failed to generate itinerary.");
-    } finally {
-      setBuildingItin(false);
-    }
-  }
-
   function toggleTheme(t: string, val: boolean) {
     setThemes(s => ({ ...s, [t]: val }));
   }
@@ -318,17 +278,7 @@ const Index: React.FC = () => {
     });
   }
 
-  function downloadItin(idx: number) {
-    if (!itineraries) return;
-    const blob = new Blob([itineraries[idx]], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `itinerary_v${idx + 1}.md`;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  // NEW: open the current route in Google Maps (inside the component!)
+  // Open in Google Maps (public URL works best with lat,lng waypoints)
   const openInGoogleMaps = () => {
     const o = origin?.trim();
     const d = destination?.trim();
@@ -336,19 +286,18 @@ const Index: React.FC = () => {
       alert("Enter origin and destination");
       return;
     }
-  
-    // The public Google Maps UI typically supports ~9 intermediate stops.
-    const MAX_UI_WAYPOINTS = 9;
-  
-    // Prefer coordinates so the UI resolves them reliably.
-    const ordered = finalStopCards.slice(0, MAX_UI_WAYPOINTS).map((s) => {
-      if (s.location && typeof s.location.lat === "number" && typeof s.location.lng === "number") {
-        return `${s.location.lat},${s.location.lng}`;
-      }
-      // Fallback (rare): keep place_id if no coords were returned for some reason
-      return `place_id:${s.place_id}`;
-    });
-  
+    // Build waypoints from coordinates (fallback to name if missing)
+    const MAX_WAYPOINTS = 23; // origin+destination + up to 23
+    const ordered = finalStopCards
+      .map((s) => {
+        if (s.location && typeof s.location.lat === "number" && typeof s.location.lng === "number") {
+          return `${s.location.lat},${s.location.lng}`;
+        }
+        return s.name || "";
+      })
+      .filter(Boolean)
+      .slice(0, MAX_WAYPOINTS);
+
     const qs = new URLSearchParams({
       api: "1",
       origin: o,
@@ -356,16 +305,27 @@ const Index: React.FC = () => {
       travelmode: "driving",
     });
     if (ordered.length) qs.set("waypoints", ordered.join("|"));
-  
+
     const url = `https://www.google.com/maps/dir/?${qs.toString()}`;
     window.open(url, "_blank", "noopener");
   };
+
+  function clearAll() {
+    setSelectedIds(new Set());
+    setFinalPolyline(null);
+    setFinalTotals(null);
+    setFinalOrder(null);
+    setFinalStopCards([]);
+  }
+
+  /* ---------------- UI ---------------- */
   return (
     <div className="h-screen grid grid-rows-[64px_1fr] bg-slate-950 text-slate-100">
       {/* Header */}
       <header className="flex items-center gap-3 px-4 border-b border-slate-800 bg-slate-900/60 backdrop-blur">
         <span className="grid place-items-center size-10 rounded-xl bg-slate-800 text-cyan-300">✈️</span>
         <span className="text-lg font-semibold">Tripidea</span>
+        <div className="text-xs text-slate-400">Directions + Places + Stargaze (server-only keys)</div>
       </header>
 
       {/* Body */}
@@ -449,7 +409,7 @@ const Index: React.FC = () => {
                             ? "border-cyan-400/70 text-cyan-300 bg-cyan-400/10"
                             : "border-slate-700 text-slate-300 hover:border-slate-600 hover:bg-slate-800"}`}
                       >
-                        {t}
+                        {t === "stargaze_auto" ? "stargaze (auto)" : t}
                       </button>
                     ))}
                   </div>
@@ -477,7 +437,9 @@ const Index: React.FC = () => {
                 {Object.entries(candidates).map(([theme, items]) =>
                   !items?.length ? null : (
                     <div key={theme}>
-                      <div className="text-[11px] uppercase tracking-[.14em] text-slate-400 mb-2">{theme}</div>
+                      <div className="text-[11px] uppercase tracking-[.14em] text-slate-400 mb-2">
+                        {theme === "stargaze_auto" ? "stargaze (auto: clear-sky only)" : theme}
+                      </div>
                       <div className="grid gap-3">
                         {items.map((p) => (
                           <div
@@ -507,13 +469,42 @@ const Index: React.FC = () => {
                                   </span>
                                 </label>
                               </div>
+
                               <div className="text-xs text-slate-400 line-clamp-2">{p.address || ""}</div>
+
+                              {/* meta row with rating/detour + stargaze badges */}
                               <div className="mt-1 flex items-center justify-between text-xs">
                                 <div className="text-slate-400">
                                   ⭐ {p.rating ?? "—"} · {p.user_ratings_total ?? 0} reviews
                                 </div>
-                                <div className="px-2 py-0.5 rounded-full border border-slate-700 text-slate-200">
-                                  {p.detourMinutes != null ? `+${p.detourMinutes} min` : "detour n/a"}
+
+                                <div className="flex items-center gap-2">
+                                  {/* detour pill */}
+                                  <span className="px-2 py-0.5 rounded-full border border-slate-700 text-slate-200">
+                                    {p.detourMinutes != null ? `+${p.detourMinutes} min` : "detour n/a"}
+                                  </span>
+
+                                  {/* stargaze badges */}
+                                  {p.theme === "stargaze_auto" && p?.stargaze && (
+                                    <>
+                                      <span className="opacity-60">·</span>
+                                      <span className="px-1.5 py-0.5 rounded-full border border-emerald-500/40 text-emerald-300">
+                                        Clear sky ~ {new Date(p.stargaze.eta_iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                      </span>
+                                      <span className="opacity-60">·</span>
+                                      <span className="text-slate-300">
+                                        Clouds {Math.round(p.stargaze.cloud_cover_percent)}%
+                                      </span>
+                                      {!!p.stargaze.zodiac?.length && (
+                                        <>
+                                          <span className="opacity-60">·</span>
+                                          <span className="text-slate-300">
+                                            {p.stargaze.zodiac.join(" & ")}
+                                          </span>
+                                        </>
+                                      )}
+                                    </>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -537,7 +528,7 @@ const Index: React.FC = () => {
                   {building ? "Building…" : `Build final route (${selectedIds.size})`}
                 </button>
                 <button
-                  onClick={() => { setSelectedIds(new Set()); setFinalPolyline(null); setFinalTotals(null); setFinalOrder(null); setFinalStopCards([]); setItineraries(null); }}
+                  onClick={clearAll}
                   className="w-full rounded-xl border border-slate-700 bg-slate-900 py-2 hover:bg-slate-800"
                 >
                   Clear selections
@@ -582,7 +573,7 @@ const Index: React.FC = () => {
             <div className="flex items-center gap-2"><span className="inline-block h-2 w-2 rounded-full bg-cyan-300" /> Stop</div>
           </div>
 
-          {/* Trip summary + itinerary panel */}
+          {/* Trip summary panel */}
           {finalTotals && (
             <div className="absolute left-3 bottom-3 md:left-auto md:right-3 md:bottom-3 z-[1002] max-w-[420px] w-[calc(100%-24px)] md:w-[420px]">
               <div className="rounded-2xl border border-slate-800 bg-slate-900/85 backdrop-blur shadow-lg overflow-hidden">
@@ -632,12 +623,14 @@ const Index: React.FC = () => {
                               </span>
                             </>
                           )}
-                          {s.theme && (
+                          {s.theme === "stargaze_auto" && s.stargaze && (
                             <>
                               <span className="opacity-60">·</span>
-                              <span className="px-1.5 py-0.5 rounded-full border border-slate-700">
-                                {s.theme}
+                              <span className="px-1.5 py-0.5 rounded-full border border-emerald-500/40 text-emerald-300">
+                                Clear sky ~ {new Date(s.stargaze.eta_iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                               </span>
+                              <span className="opacity-60">·</span>
+                              <span>Clouds {Math.round(s.stargaze.cloud_cover_percent)}%</span>
                             </>
                           )}
                         </div>
@@ -646,59 +639,16 @@ const Index: React.FC = () => {
                   ))}
                 </div>
 
-                {/* Actions */}
+                {/* actions */}
                 <div className="p-3 border-t border-slate-800 flex items-center gap-2">
                   <button
                     onClick={openInGoogleMaps}
-                    className="flex-1 rounded-xl bg-emerald-400 text-slate-950 font-semibold py-2 hover:bg-emerald-300"
-                    title="Open this route with your selected stops in Google Maps"
+                    disabled={!origin || !destination || finalStopCards.length === 0}
+                    className="flex-1 rounded-xl bg-emerald-400 text-slate-950 font-semibold py-2 hover:bg-emerald-300 disabled:opacity-60"
                   >
                     Open in Google Maps
                   </button>
                 </div>
-
-                {/* Itinerary versions (tabs) — optional UI retained */}
-                {itineraries && (
-                  <div className="border-t border-slate-800">
-                    <div className="flex items-center gap-2 px-3 pt-3">
-                      {[0,1,2].map((i) => (
-                        <button
-                          key={i}
-                          onClick={() => setItinTab(i)}
-                          className={`px-3 py-1.5 rounded-full border text-xs ${
-                            itinTab === i
-                              ? "border-violet-400/70 text-violet-300 bg-violet-400/10"
-                              : "border-slate-700 text-slate-300 hover:border-slate-600 hover:bg-slate-800"
-                          }`}
-                        >
-                          Version {i+1}
-                        </button>
-                      ))}
-                      <div className="ml-auto flex items-center gap-2">
-                        <button
-                          onClick={() => {
-                            if (!itineraries) return;
-                            navigator.clipboard.writeText(itineraries[itinTab] || "");
-                          }}
-                          className="px-3 py-1.5 rounded-full border border-slate-700 text-xs hover:bg-slate-800"
-                        >
-                          Copy
-                        </button>
-                        <button
-                          onClick={() => downloadItin(itinTab)}
-                          className="px-3 py-1.5 rounded-full border border-slate-700 text-xs hover:bg-slate-800"
-                        >
-                          Download
-                        </button>
-                      </div>
-                    </div>
-                    <div className="max-h-[30vh] overflow-y-auto scroll-area p-3">
-                      <pre className="whitespace-pre-wrap text-sm leading-relaxed font-sans text-slate-100">
-                        {itineraries[itinTab]}
-                      </pre>
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           )}
