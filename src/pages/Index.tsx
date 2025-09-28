@@ -47,7 +47,7 @@ type FinalRouteResponse = {
 };
 
 const ALL_THEMES = [
-  "hikes","waterfalls","lakes","cafes","viewpoints","parks","food","museums","stargaze_auto"
+  "hikes","waterfalls","lakes","cafes","viewpoints","parks","food","museums","stargaze_auto", "camping"
 ] as const;
 
 /* ---------------- helpers ---------------- */

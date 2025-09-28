@@ -129,6 +129,7 @@ const THEME_MAP = {
   parks:        { mode: "nearby", types: ["park"] },
   food:         { mode: "nearby", types: ["restaurant"] },
   museums:      { mode: "nearby", types: ["museum"] },
+  camping:      { mode: "nearby", types: ["camping"]}, 
 };
 
 /* -------------------------- Places API helpers ------------------------- */
